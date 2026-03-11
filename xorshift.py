@@ -1,45 +1,91 @@
 #!/usr/bin/env python3
-"""Xorshift PRNGs — fast non-cryptographic random number generators."""
-import sys
+"""Xorshift PRNG family — fast pseudo-random number generators.
+
+One file. Zero deps. Does one thing well.
+
+Implements xorshift32, xorshift64, xorshift128, and xorshift128+ (used in V8 JS engine).
+Based on George Marsaglia's "Xorshift RNGs" (2003).
+"""
+import sys, time
 
 class Xorshift32:
-    def __init__(self, seed=2463534242):
-        self.state = seed & 0xFFFFFFFF
+    MASK = 0xFFFFFFFF
+    def __init__(self, seed=None):
+        self.state = (seed or int(time.time())) & self.MASK or 1
     def next(self):
         x = self.state
-        x ^= (x << 13) & 0xFFFFFFFF
+        x ^= (x << 13) & self.MASK
         x ^= x >> 17
-        x ^= (x << 5) & 0xFFFFFFFF
+        x ^= (x << 5) & self.MASK
         self.state = x
         return x
-    def random(self): return self.next() / 0xFFFFFFFF
+    def random(self):
+        return self.next() / (self.MASK + 1)
+
+class Xorshift64:
+    MASK = 0xFFFFFFFFFFFFFFFF
+    def __init__(self, seed=None):
+        self.state = (seed or int(time.time())) & self.MASK or 1
+    def next(self):
+        x = self.state
+        x ^= (x << 13) & self.MASK
+        x ^= x >> 7
+        x ^= (x << 17) & self.MASK
+        self.state = x
+        return x
+    def random(self):
+        return self.next() / (self.MASK + 1)
 
 class Xorshift128:
+    MASK = 0xFFFFFFFF
     def __init__(self, seed=None):
-        s = seed or 42
-        self.s = [(s * (i+1) * 2654435761) & 0xFFFFFFFF for i in range(4)]
+        s = seed or int(time.time())
+        self.x = s & self.MASK or 1
+        self.y = (s >> 32 | 362436069) & self.MASK
+        self.z = (s >> 16 | 521288629) & self.MASK
+        self.w = (s >> 48 | 88675123) & self.MASK
     def next(self):
-        t = self.s[3]
-        t ^= (t << 11) & 0xFFFFFFFF; t ^= t >> 8
-        self.s[3] = self.s[2]; self.s[2] = self.s[1]; self.s[1] = self.s[0]
-        s0 = self.s[0]; t ^= s0; t ^= (s0 >> 19) & 0xFFFFFFFF
-        self.s[0] = t & 0xFFFFFFFF
-        return self.s[0]
+        t = self.x ^ ((self.x << 11) & self.MASK)
+        self.x, self.y, self.z = self.y, self.z, self.w
+        self.w = self.w ^ (self.w >> 19) ^ (t ^ (t >> 8))
+        self.w &= self.MASK
+        return self.w
+    def random(self):
+        return self.next() / (self.MASK + 1)
 
-class SplitMix64:
-    def __init__(self, seed=0): self.state = seed & ((1<<64)-1)
+class Xorshift128Plus:
+    """Used in V8, SpiderMonkey, and WebKit."""
+    MASK = 0xFFFFFFFFFFFFFFFF
+    def __init__(self, seed=None):
+        s = seed or int(time.time())
+        self.s0 = s & self.MASK or 1
+        self.s1 = ((s >> 32) ^ 0x9E3779B97F4A7C15) & self.MASK or 1
     def next(self):
-        self.state = (self.state + 0x9E3779B97F4A7C15) & ((1<<64)-1)
-        z = self.state
-        z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & ((1<<64)-1)
-        z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & ((1<<64)-1)
-        return z ^ (z >> 31)
+        s1 = self.s0
+        s0 = self.s1
+        self.s0 = s0
+        s1 ^= (s1 << 23) & self.MASK
+        self.s1 = (s1 ^ s0 ^ (s1 >> 17) ^ (s0 >> 26)) & self.MASK
+        return (self.s1 + s0) & self.MASK
+    def random(self):
+        return self.next() / (self.MASK + 1)
+
+
+def main():
+    print("Xorshift PRNG Family Demo\n")
+    for name, cls in [("xorshift32", Xorshift32), ("xorshift64", Xorshift64),
+                       ("xorshift128", Xorshift128), ("xorshift128+", Xorshift128Plus)]:
+        rng = cls(42)
+        vals = [rng.next() for _ in range(5)]
+        print(f"{name:15s}: {', '.join(str(v) for v in vals)}")
+    # Speed test
+    rng = Xorshift128Plus(42)
+    n = 1_000_000
+    t0 = time.perf_counter()
+    for _ in range(n):
+        rng.next()
+    dt = time.perf_counter() - t0
+    print(f"\nxorshift128+: {n:,} calls in {dt:.3f}s ({n/dt:,.0f}/s)")
 
 if __name__ == "__main__":
-    rng = Xorshift32(12345)
-    vals = [rng.random() for _ in range(10000)]
-    print(f"Xorshift32 — mean: {sum(vals)/len(vals):.4f} (expect ~0.5)")
-    rng128 = Xorshift128(42)
-    print(f"Xorshift128 sample: {[rng128.next() for _ in range(5)]}")
-    sm = SplitMix64(0)
-    print(f"SplitMix64 sample: {[sm.next() for _ in range(3)]}")
+    main()
